@@ -1,4 +1,5 @@
 import numpy as np
+import material
 def create_world(x, y, z):
         x_length = len(np.zeros(x))
         y_length = len(np.zeros(y))
@@ -14,7 +15,7 @@ def create_world(x, y, z):
         print(geometry)
         return geometry, origin
 
-def create_slab(geometry, origin, xi, xf, yi, yf, zi, zf):
+def create_slab(geometry, origin, xi, xf, yi, yf, zi, zf, material_id):
         x_length = xf - xi + 1
         y_length = yf - yi + 1
         z_length = zf - zi + 1
@@ -35,7 +36,7 @@ def create_slab(geometry, origin, xi, xf, yi, yf, zi, zf):
                                 geometry[origin[0] + x_array[i],
                                          origin[1] + y_array[j],
                                          origin[2] + z_array[k]
-                                         ] = 1
+                                         ] = material_id
                                         
 
         #print(geometry)

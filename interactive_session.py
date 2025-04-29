@@ -1,6 +1,6 @@
 import numpy as np
 import geometry
-
+import sim
 
 print("Welcome to the diffusion solver. To get things started, please create your world, and then slab geometry:")
 user_input = input("Enter world creation command (e.g., geometry.create_world(x, y, z)): ")
@@ -9,7 +9,7 @@ print(f"Great ! You created an empty void. Type in the slab that you want to cre
 
 
 while True:
-    user_input = input("Enter a geometry creation command (e.g., geometry.create_slab(world, origin, xi, xf, yi, yf, zi, zf)): ")
+    user_input = input("Enter a geometry creation command (e.g., geometry.create_slab(world, origin, xi, xf, yi, yf, zi, zf, material_id)): ")
 
     if user_input.strip().lower() == "done":
         print(f"Great ! You created a slab")
@@ -22,5 +22,11 @@ while True:
     world = eval(user_input)
     print(world)
 
+user_input2 = input("Start the simulation (e.g, sim.simulate(world, samples, x_pos, y_pos, z_pos, num_iter)):  ")
+eval(user_input2)
+
+
+def setup(world):
+    return world
 
 
