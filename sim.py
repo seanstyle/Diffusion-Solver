@@ -2,98 +2,100 @@ import geometry
 import numpy as np
 import material
 import random
+import simfunction
+import fission
+from functools import lru_cache
 
-def surr_elements(world, x, y, z):
-    x_length, y_length, z_length = world.shape
-    possible_neighbors = [
-        # surrounding coordinates at z = 0
-        (x - 1, y, z),
-        (x + 1, y, z),
-        (x, y - 1, z),
-        (x, y + 1, z),
-        (x + 1, y + 1, z),
-        (x + 1, y - 1, z),
-        (x - 1, y - 1, z),
-        (x - 1, y + 1, z),
+@lru_cache(maxsize=None)
+def cached_macroXS(ele_mat, energy):
+    return material.macroXS(ele_mat, energy)
 
-        # surrounding coordinates at z = -1
-        (x, y, z - 1),
-        (x - 1, y, z - 1),
-        (x + 1, y, z - 1),
-        (x, y - 1, z - 1),
-        (x, y + 1, z - 1),
-        (x + 1, y + 1, z - 1),
-        (x + 1, y - 1, z - 1),
-        (x - 1, y - 1, z - 1),
-        (x - 1, y + 1, z - 1),
+def simulate(world, samples, x_pos, y_pos, z_pos, energy_array, weight_array, tally_dict, max_depth=10, depth=0):
+    if depth > max_depth:
+        return
 
-        # surrounding coordinates at z = +1
-        (x, y, z + 1),
-        (x - 1, y, z + 1),
-        (x + 1, y, z + 1),
-        (x, y - 1, z + 1),
-        (x, y + 1, z + 1),
-        (x + 1, y + 1, z + 1),
-        (x + 1, y - 1, z + 1),
-        (x - 1, y - 1, z + 1),
-        (x - 1, y + 1, z + 1),
-    ]
+    w_cutoff = 0.25
+    w_survival = 1
+    weight_array_normalized = weight_array / np.sum(weight_array)
 
-    valid_neighbors = []
-    for xi, yi, zi in possible_neighbors:
-        if (0 <= xi < x_length) and (0 <= yi < y_length) and (0 <= zi < z_length):
-            valid_neighbors.append((xi, yi, zi))
+    for _ in range(samples):
+        energy = np.random.choice(energy_array, p=weight_array_normalized)
+        w = 1
+        current_pos = [x_pos, y_pos, z_pos]
 
-    return valid_neighbors
+        alive = True
+        while alive:
+            surr_ele = simfunction.surr_elements(world, *current_pos)
+            if not surr_ele:
+                break  # particle leaves geometry, terminate
 
+            targ_ele = random.choice(surr_ele)
+            distance = np.linalg.norm(np.array(targ_ele) - np.array(current_pos))
+            proj = np.linalg.norm([targ_ele[0] - current_pos[0], targ_ele[1] - current_pos[1]])
+            cos_theta = proj / distance if distance != 0 else 1
 
-def simulate(world, samples, x_pos, y_pos, z_pos, num_iter):
-    num_scat = []
-    num_abs = []
-    num_fis = []
+            ele_mat = world[targ_ele[0], targ_ele[1], targ_ele[2]]
+            macro_xs_dict = cached_macroXS(ele_mat, energy)
+            total_xs = sum(macro_xs_dict.values())
+            Sigma_s = macro_xs_dict.get('Sigma_s', 0)
+            Sigma_t = Sigma_s * (1 - cos_theta)
+            prob_interact = 1 - Sigma_t * distance
 
-    start_pos = world[x_pos, y_pos, z_pos]
-    for i in range(samples):
-        print(f"Sampling {i} particles")
-        surr_ele = surr_elements(world, x_pos, y_pos, z_pos)  
-        targ_ele = random.choice(surr_ele)         
-        distance = np.linalg.norm(np.array(targ_ele) - np.array([x_pos, y_pos, z_pos]))
-        
-        ele_mat = world[targ_ele[0], targ_ele[1], targ_ele[2]]
+            rng_move = np.random.uniform(0, 1)
 
-        prob_interact = 1 - (material.properties(ele_mat)[0] + material.properties(ele_mat)[1]) * distance   
-        # ^^ see material.py --> material.properties(0) and material.properties(1) is hardcoded as scatter and absorption XS respectfully ^^ #
-        rng = np.random.uniform(0, 1)
-        if rng <= prob_interact:
-            total_xs = material.properties(ele_mat)[0] + material.properties(ele_mat)[1] + material.properties(ele_mat)[2]
-            rng = np.random.uniform(0, total_xs)
-            if rng <= material.properties(ele_mat)[0]:
-                while rng < material.properties(ele_mat)[0]:
-                    num_scat.append(1) # data collection
+            if prob_interact == 0 or rng_move < prob_interact:
+                current_pos = simfunction.continue_path(current_pos, targ_ele)
+                continue  # particle moves without interaction
 
-                    start_pos = np.array([targ_ele[0], targ_ele[1], targ_ele[2]])
-                    targ_ele = random.choice(surr_elements(world, start_pos[0], start_pos[1], start_pos[2])) # refreshes targe_ele[] in previous line
-                    rng = np.random.uniform(0, total_xs)
-                    if rng > material.properties(ele_mat)[0]:
+            # Interaction occurs here
+            rng_reaction = np.random.uniform(0, total_xs)
+            cumulative_prob = 0
+
+            for reaction, xs_value in macro_xs_dict.items():
+                cumulative_prob += xs_value
+
+                if rng_reaction <= cumulative_prob:
+                    if reaction == 'Sigma_s':
+                        tally_dict['scatter'] = tally_dict.get('scatter', 0) + 1
+
+                        # Implicit capture
+                        w *= (Sigma_s / total_xs)
+                        if w < w_cutoff:
+                            if np.random.random() < (1 - Sigma_s / total_xs):
+                                alive = False
+                                break
+                            else:
+                                w = w_survival
+
+                        new_pos = random.choice(simfunction.surr_elements(world, *current_pos))
+                        simulate(world, 1, *new_pos, energy_array, weight_array, tally_dict, max_depth, depth+1)
+                        alive = False
                         break
-            elif rng <= material.properties(ele_mat)[0] + material.properties(ele_mat)[1]:
-                num_abs.append(1)
-                pass
-            elif rng <= total_xs:
-                num_fis.append(1)
-                iter = 0
-                while rng <= total_xs and iter < num_iter:
-                    iter += 1
-                    n_prod = random.choice([1, 2, 3, 4, 5])
-                    for i in range(n_prod):
-                        n_pos = random.choice(surr_elements(world, targ_ele[0], targ_ele[1], targ_ele[2]))
-                        simulate(world, 1, n_pos[0], n_pos[1], n_pos[2], num_iter)
-    
-    num_scat_tot = np.sum(num_scat)
-    num_abs_tot = np.sum(num_abs)
-    num_fis_tot = np.sum(num_fis)
-    
-    print(f"Total # of scatters: {num_scat_tot} \
-            Total # of absorption: {num_abs_tot} \
-            Total # of fission: {num_fis_tot}")
-    return 0
+
+                    elif reaction == 'Sigma_f':
+                        tally_dict['fission'] = tally_dict.get('fission', 0) + 1
+                        fission_results = fission.generate_fission_results(ele_mat, energy)
+                        n_prod = fission_results[2]
+                        new_energy_array = fission_results[0]
+
+                        for _ in range(n_prod):
+                            new_pos = random.choice(simfunction.surr_elements(world, *current_pos))
+                            simulate(world, 1, *new_pos, new_energy_array, [1], tally_dict, max_depth, depth+1)
+
+                        alive = False
+                        break
+
+                    elif reaction == 'Sigma_a':
+                        tally_dict['absorption'] = tally_dict.get('absorption', 0) + 1
+                        alive = False
+                        break
+
+                    else:  # other reactions
+                        reaction_info = material.getReaction(reaction)
+                        product = reaction_info.get('Product')
+                        if product:
+                            tally_dict[product] = tally_dict.get(product, 0) + 1
+                        alive = False
+                        break
+
+                    break  # reaction handled, exit loop
